@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEMO DELIVERY CONFIGURATION — cleartext HTTP is permitted.
+
+    Why: The demo backend (printer-spooler-kit) serves HTTP only on port 5100.
+    The server IP is user-configured at runtime, so it cannot be listed as a
+    domain-specific exception here. Android NSC does not support wildcard IP
+    ranges (RFC 1918), making a narrowly-scoped exception impossible without
+    hardcoding the reviewer's IP address.
+
+    Trade-off: cleartext HTTP is permitted for all destinations, not just the
+    demo server. This is acceptable for a take-home assignment APK used on a
+    controlled LAN. A production deployment must revert to HTTPS-only.
+
+    To revert: set cleartextTrafficPermitted="false" and serve the backend over
+    TLS with a trusted certificate.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

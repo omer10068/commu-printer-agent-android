@@ -1,13 +1,15 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Legacy backup rules (used on devices running Android 11 and below).
+    See https://developer.android.com/guide/topics/data/autobackup
 -->
 <full-backup-content>
     <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+        Exclude the EncryptedSharedPreferences file from cloud backup.
+        The Keystore encryption key is device-specific; a backup of the
+        encrypted file is useless on another device and would cause
+        EncryptedSharedPreferences initialization to fail with a
+        KeyStoreException after restore.
+    -->
+    <exclude domain="sharedpref" path="secure_agent_prefs.xml" />
 </full-backup-content>
