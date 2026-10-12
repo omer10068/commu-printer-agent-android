@@ -33,3 +33,6 @@ local.properties
 
 # Local configuration
 *.local
+
+# Local AI development instructions
+CLAUDE.md
