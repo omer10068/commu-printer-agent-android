@@ -36,3 +36,7 @@ local.properties
 
 # Local AI development instructions
 CLAUDE.md
+
+# Screenshots and local test artifacts
+*.png
+*.jpg
