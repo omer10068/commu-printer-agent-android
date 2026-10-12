@@ -3,11 +3,18 @@ package com.commu.printeragent.ui.printers
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.commu.printeragent.data.AppSettings
+import com.commu.printeragent.data.BackendApi
+import com.commu.printeragent.data.PrinterMappingRepository
 import com.commu.printeragent.data.PrinterRecord
 import com.commu.printeragent.data.PrinterRecord.Companion.applyEdit
 import com.commu.printeragent.data.PrinterRepository
+import com.commu.printeragent.data.SecureTokenStorage
+import com.commu.printeragent.printing.EscPosEncoder
 import com.commu.printeragent.printing.LanScanner
 import com.commu.printeragent.printing.LocalNetworkInfo
+import com.commu.printeragent.printing.PrintResult
+import com.commu.printeragent.printing.PrinterChannel
 import com.commu.printeragent.printing.TcpProbe
 import com.commu.printeragent.printing.isValidIpv4
 import com.commu.printeragent.printing.isValidPort
@@ -20,6 +27,13 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 data class StatusMessage(val text: String, val isError: Boolean)
+
+sealed class SyncStatus {
+    object Idle : SyncStatus()
+    data class Success(val message: String) : SyncStatus()
+    data class Partial(val message: String) : SyncStatus()
+    data class Failure(val message: String) : SyncStatus()
+}
 
 data class PrinterUiState(
     // Network / scan
@@ -47,11 +61,24 @@ data class PrinterUiState(
     // General feedback
     val statusMessage: StatusMessage? = null,
     val loadError: String? = null,
+
+    // Backend sync
+    val isSyncing: Boolean = false,
+    val syncStatus: SyncStatus = SyncStatus.Idle,
+    val backendMappings: Map<Int, String> = emptyMap(),  // backendId → localPrinterUUID
+
+    // Direct print test
+    val printingIds: Set<String> = emptySet(),
+    val printResults: Map<String, String> = emptyMap(),  // localPrinterUUID → last result message
 )
 
 class PrinterViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repository = PrinterRepository(app)
+    private val mappingRepo = PrinterMappingRepository(app)
+    private val backendApi = BackendApi()
+    private val appSettings = AppSettings(app)
+    private val tokenStorage = SecureTokenStorage(app)
 
     private val _uiState = MutableStateFlow(PrinterUiState())
     val uiState: StateFlow<PrinterUiState> = _uiState.asStateFlow()
@@ -61,6 +88,16 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
     init {
         refreshNetworkInfo()
         loadPrinters()
+        loadMappings()
+    }
+
+    private fun loadMappings() {
+        viewModelScope.launch {
+            try {
+                val maps = mappingRepo.loadAll()
+                _uiState.update { it.copy(backendMappings = maps) }
+            } catch (_: Exception) { /* non-critical on startup */ }
+        }
     }
 
     // ── Network info ──────────────────────────────────────────────────────────
@@ -170,7 +207,11 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                     val next = _uiState.value.savedPrinters.firstOrNull { it.id != id }
                     if (next != null) repository.setPrimary(next.id)
                 }
+                mappingRepo.removeByLocalId(id)
                 reloadPrinters()
+                _uiState.update { state ->
+                    state.copy(backendMappings = state.backendMappings.filterValues { it != id })
+                }
             } catch (_: Exception) {
                 _uiState.update {
                     it.copy(statusMessage = StatusMessage("שגיאה במחיקת מדפסת — נסה שנית", true))
@@ -322,6 +363,125 @@ class PrinterViewModel(app: Application) : AndroidViewModel(app) {
                 _uiState.update { it.copy(formError = "שגיאה בשמירה — נסה שנית") }
             }
         }
+    }
+
+    // ── Backend sync ──────────────────────────────────────────────────────────
+
+    fun syncWithBackend() {
+        if (_uiState.value.isSyncing) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSyncing = true, syncStatus = SyncStatus.Idle) }
+            try {
+                val url = appSettings.getBackendUrl()?.takeIf { it.isNotBlank() }
+                    ?: run {
+                        _uiState.update { it.copy(isSyncing = false, syncStatus = SyncStatus.Failure("כתובת שרת לא מוגדרת — עבור למסך חיבור")) }
+                        return@launch
+                    }
+                val tenantId = appSettings.getTenantId()?.takeIf { it.isNotBlank() }
+                    ?: run {
+                        _uiState.update { it.copy(isSyncing = false, syncStatus = SyncStatus.Failure("מזהה דייר לא מוגדר — עבור למסך חיבור")) }
+                        return@launch
+                    }
+                val token = tokenStorage.getToken()?.takeIf { it.isNotBlank() }
+                    ?: run {
+                        _uiState.update { it.copy(isSyncing = false, syncStatus = SyncStatus.Failure("אסימון סוכן לא מוגדר — עבור למסך חיבור")) }
+                        return@launch
+                    }
+
+                val printers = _uiState.value.savedPrinters
+                if (printers.isEmpty()) {
+                    _uiState.update { it.copy(isSyncing = false, syncStatus = SyncStatus.Failure("אין מדפסות שמורות לסנכרון")) }
+                    return@launch
+                }
+
+                // Reject duplicate names — backend requires unique names per tenant
+                val duplicates = printers.map { it.name.trim().lowercase() }
+                    .groupBy { it }.filter { it.value.size > 1 }.keys
+                if (duplicates.isNotEmpty()) {
+                    _uiState.update {
+                        it.copy(isSyncing = false, syncStatus = SyncStatus.Failure("שמות מדפסת כפולים: ${duplicates.joinToString(", ")}"))
+                    }
+                    return@launch
+                }
+
+                val names = printers.map { it.name.trim() }
+                val primaryName = printers.firstOrNull { it.isPrimary }?.name?.trim()
+
+                // POST agent-sync to register printer names with the backend
+                val syncResult = backendApi.agentSync(url, tenantId, token, names, primaryName)
+                if (syncResult.isFailure) {
+                    _uiState.update {
+                        it.copy(isSyncing = false, syncStatus = SyncStatus.Failure(syncResult.exceptionOrNull()?.message ?: "שגיאת סנכרון"))
+                    }
+                    return@launch
+                }
+
+                // GET active printers to retrieve backend IDs
+                val activeResult = backendApi.fetchActivePrinters(url, tenantId, token)
+                if (activeResult.isFailure) {
+                    _uiState.update {
+                        it.copy(isSyncing = false, syncStatus = SyncStatus.Failure(activeResult.exceptionOrNull()?.message ?: "שגיאה בקבלת מדפסות"))
+                    }
+                    return@launch
+                }
+                val backendPrinters = activeResult.getOrThrow()
+
+                // Match local printers to backend printers by name (case-insensitive)
+                val newMappings = mutableMapOf<Int, String>()
+                val unmapped = mutableListOf<String>()
+                for (local in printers) {
+                    val match = backendPrinters.firstOrNull { bp ->
+                        bp.name.trim().equals(local.name.trim(), ignoreCase = true)
+                    }
+                    if (match != null) newMappings[match.id] = local.id
+                    else unmapped.add(local.name)
+                }
+
+                mappingRepo.saveAll(newMappings)
+
+                val status = when {
+                    unmapped.isEmpty() -> SyncStatus.Success("סנכרון הצליח — ${newMappings.size} מדפסות ממופות")
+                    newMappings.isEmpty() -> SyncStatus.Failure("אף מדפסת לא ממופה — בדוק ששמות המדפסות תואמים לשרת")
+                    else -> SyncStatus.Partial("${newMappings.size} ממופות · לא נמצאו בשרת: ${unmapped.joinToString(", ")}")
+                }
+
+                _uiState.update { it.copy(isSyncing = false, syncStatus = status, backendMappings = newMappings) }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isSyncing = false, syncStatus = SyncStatus.Failure(e.message ?: "שגיאה לא ידועה")) }
+            }
+        }
+    }
+
+    fun clearSyncStatus() {
+        _uiState.update { it.copy(syncStatus = SyncStatus.Idle) }
+    }
+
+    // ── Direct print test ─────────────────────────────────────────────────────
+
+    fun testPrint(id: String) {
+        if (id in _uiState.value.printingIds) return
+        val record = _uiState.value.savedPrinters.find { it.id == id } ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(printingIds = it.printingIds + id) }
+            val bytes = EscPosEncoder.buildTestReceipt(printerName = record.name)
+            val result = PrinterChannel.send(record.address, record.port, bytes)
+            val message = when (result) {
+                is PrintResult.Transmitted ->
+                    "✓ ${result.byteCount} bytes נשלחו — נייר לא מאושר (ESC/POS)"
+                is PrintResult.Failed ->
+                    "✗ ${result.reason}"
+            }
+            _uiState.update { state ->
+                state.copy(
+                    printingIds = state.printingIds - id,
+                    printResults = state.printResults + (id to message),
+                )
+            }
+        }
+    }
+
+    fun clearPrintResult(id: String) {
+        _uiState.update { it.copy(printResults = it.printResults - id) }
     }
 
     // ── Misc ──────────────────────────────────────────────────────────────────

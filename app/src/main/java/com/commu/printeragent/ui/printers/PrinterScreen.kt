@@ -148,8 +148,15 @@ fun PrinterScreen(
             HorizontalDivider(color = IndustrialBorder)
             Spacer(Modifier.height(12.dp))
 
-            // ── Section [4]: Saved printers ───────────────────────────────────
-            PrinterSectionHeader(number = "4", title = "מדפסות שמורות")
+            // ── Section [4]: Saved printers + backend sync ───────────────────
+            PrinterSectionHeader(number = "4", title = "מדפסות שמורות וסנכרון שרת")
+            Spacer(Modifier.height(8.dp))
+            SyncPanel(
+                isSyncing = state.isSyncing,
+                syncStatus = state.syncStatus,
+                onSync = { vm.syncWithBackend() },
+                onClear = { vm.clearSyncStatus() },
+            )
             Spacer(Modifier.height(8.dp))
             if (!state.isPrintersLoading && state.loadError != null) {
                 MonoText("⚠ ${state.loadError}", IndustrialRed)
@@ -175,19 +182,28 @@ fun PrinterScreen(
                     )
                 }
                 else -> {
+                    val backendIdByLocal = state.backendMappings.entries
+                        .associateBy({ it.value }, { it.key })
                     state.savedPrinters.forEach { printer ->
                         PrinterCard(
                             printer = printer,
                             isChecking = state.checkingIds.contains(printer.id),
+                            isPrinting = state.printingIds.contains(printer.id),
+                            printResult = state.printResults[printer.id],
+                            backendId = backendIdByLocal[printer.id],
                             onTest = { vm.testPrinter(printer.id) },
+                            onPrint = { vm.testPrint(printer.id) },
                             onEdit = { vm.startEdit(printer) },
                             onDelete = { vm.deletePrinter(printer.id) },
                             onSetPrimary = { vm.setPrimary(printer.id) },
+                            onClearPrintResult = { vm.clearPrintResult(printer.id) },
                         )
                         Spacer(Modifier.height(8.dp))
                     }
+                    val mappedCount = state.backendMappings.size
+                    val totalCount = state.savedPrinters.size
                     MonoText(
-                        "${state.savedPrinters.size} מדפסות שמורות",
+                        "${totalCount} מדפסות שמורות · $mappedCount ממופות לשרת",
                         IndustrialTextDim,
                     )
                 }
@@ -501,10 +517,15 @@ private fun PrinterForm(state: PrinterUiState, vm: PrinterViewModel) {
 private fun PrinterCard(
     printer: PrinterRecord,
     isChecking: Boolean,
+    isPrinting: Boolean,
+    printResult: String?,
+    backendId: Int?,
     onTest: () -> Unit,
+    onPrint: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onSetPrimary: () -> Unit,
+    onClearPrintResult: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -570,6 +591,33 @@ private fun PrinterCard(
             MonoText(printer.notes, IndustrialTextDim, fontSize = 11.sp)
         }
 
+        // Backend mapping badge
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (backendId != null) {
+                Text(
+                    "B:$backendId",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = IndustrialGreen,
+                    modifier = Modifier
+                        .background(IndustrialGreen.copy(alpha = 0.10f))
+                        .border(1.dp, IndustrialGreen.copy(alpha = 0.35f))
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                )
+            } else {
+                Text(
+                    "לא ממופה",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = IndustrialTextDim,
+                    modifier = Modifier
+                        .background(IndustrialSurface)
+                        .border(1.dp, IndustrialBorder)
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                )
+            }
+        }
+
         // Last check status
         Row(verticalAlignment = Alignment.CenterVertically) {
             MonoText("בדיקה אחרונה: ", IndustrialTextDim, fontSize = 11.sp)
@@ -587,19 +635,57 @@ private fun PrinterCard(
             }
         }
 
+        // Print result (cleared when no result)
+        printResult?.let { result ->
+            val isOk = result.startsWith("✓")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(IndustrialSurface)
+                    .border(1.dp, if (isOk) IndustrialGreen.copy(alpha = 0.4f) else IndustrialRed.copy(alpha = 0.4f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    result,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = if (isOk) IndustrialGreen else IndustrialRed,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onClearPrintResult,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+                ) {
+                    Text("×", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = IndustrialTextDim)
+                }
+            }
+        }
+
         HorizontalDivider(color = IndustrialBorder, modifier = Modifier.padding(vertical = 2.dp))
 
         // Action buttons
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(onClick = onTest, enabled = !isChecking) {
-                Text("[ בדוק ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialBlue)
+                if (isChecking) {
+                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = IndustrialAmber)
+                    Spacer(Modifier.width(3.dp))
+                }
+                Text("[ TCP ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialBlue)
+            }
+            TextButton(onClick = onPrint, enabled = !isPrinting) {
+                if (isPrinting) {
+                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = IndustrialAmber)
+                    Spacer(Modifier.width(3.dp))
+                }
+                Text("[ הדפס ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialAmber)
             }
             TextButton(onClick = onEdit) {
                 Text("[ ערוך ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialTextDim)
             }
             if (!printer.isPrimary) {
                 TextButton(onClick = onSetPrimary) {
-                    Text("[ ★ ראשית ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialTextDim)
+                    Text("[ ★ ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialTextDim)
                 }
             }
             Spacer(Modifier.weight(1f))
@@ -613,6 +699,89 @@ private fun PrinterCard(
             } else {
                 TextButton(onClick = { confirmDelete = true }) {
                     Text("[ מחק ]", fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = IndustrialRed)
+                }
+            }
+        }
+    }
+}
+
+// ── Sync panel ────────────────────────────────────────────────────────────────
+
+@Composable
+private fun SyncPanel(
+    isSyncing: Boolean,
+    syncStatus: SyncStatus,
+    onSync: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(IndustrialSurface)
+            .border(1.dp, IndustrialBorder)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onSync,
+                enabled = !isSyncing,
+                shape = androidx.compose.ui.graphics.RectangleShape,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = IndustrialBlue,
+                    contentColor = Color.White,
+                    disabledContainerColor = IndustrialBorder,
+                ),
+            ) {
+                if (isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text("סנכרן עם שרת", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            }
+            MonoText("POST agent-sync → GET active", IndustrialTextDim, fontSize = 10.sp)
+        }
+
+        if (syncStatus !is SyncStatus.Idle) {
+            val (color, prefix) = when (syncStatus) {
+                is SyncStatus.Success -> IndustrialGreen to "✓"
+                is SyncStatus.Partial -> IndustrialAmber to "△"
+                is SyncStatus.Failure -> IndustrialRed to "✗"
+                SyncStatus.Idle -> IndustrialTextDim to ""
+            }
+            val message = when (syncStatus) {
+                is SyncStatus.Success -> syncStatus.message
+                is SyncStatus.Partial -> syncStatus.message
+                is SyncStatus.Failure -> syncStatus.message
+                SyncStatus.Idle -> ""
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(color.copy(alpha = 0.08f))
+                    .border(1.dp, color.copy(alpha = 0.4f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "$prefix $message",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = color,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = onClear,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+                ) {
+                    Text("×", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = IndustrialTextDim)
                 }
             }
         }
