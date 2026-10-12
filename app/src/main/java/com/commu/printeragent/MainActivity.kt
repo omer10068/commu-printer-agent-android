@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.commu.printeragent.ui.connection.ConnectionScreen
+import com.commu.printeragent.ui.jobs.JobQueueScreen
 import com.commu.printeragent.ui.printers.PrinterScreen
 import com.commu.printeragent.ui.theme.CommuPrinterAgentTheme
 import com.commu.printeragent.ui.theme.IndustrialBorder
@@ -40,7 +41,7 @@ import com.commu.printeragent.ui.theme.IndustrialDark
 import com.commu.printeragent.ui.theme.IndustrialPanel
 import com.commu.printeragent.ui.theme.IndustrialTextDim
 
-enum class AppScreen { CONNECTION, PRINTERS }
+enum class AppScreen { CONNECTION, PRINTERS, JOBS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +63,9 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxSize(),
                             )
                             AppScreen.PRINTERS -> PrinterScreen(
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            AppScreen.JOBS -> JobQueueScreen(
                                 modifier = Modifier.fillMaxSize(),
                             )
                         }
@@ -92,6 +96,12 @@ private fun AppTabBar(current: AppScreen, onSelect: (AppScreen) -> Unit) {
                 label = "2 · מדפסות",
                 selected = current == AppScreen.PRINTERS,
                 onClick = { onSelect(AppScreen.PRINTERS) },
+                modifier = Modifier.weight(1f),
+            )
+            AppTab(
+                label = "3 · תורים",
+                selected = current == AppScreen.JOBS,
+                onClick = { onSelect(AppScreen.JOBS) },
                 modifier = Modifier.weight(1f),
             )
         }
