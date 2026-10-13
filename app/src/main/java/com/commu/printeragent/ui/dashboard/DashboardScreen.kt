@@ -346,13 +346,18 @@ private fun StatusCard(
     onStart: () -> Unit,
     onStop: () -> Unit,
 ) {
-    val isActive = agentStatus !is AgentStatus.Stopped && agentStatus !is AgentStatus.NoConfig
-    val statusDot = if (isActive) "●" else "○"
-    val statusColor = when {
-        isActive -> IndustrialGreen
-        agentStatus is AgentStatus.BackingOff -> IndustrialAmber
+    // Service is running when not explicitly Stopped or awaiting config.
+    // Used only to decide which button to show — BackingOff still has a running service.
+    val serviceRunning = agentStatus !is AgentStatus.Stopped && agentStatus !is AgentStatus.NoConfig
+
+    // Colour reflects the actual operational state, not just whether the service is alive.
+    // BackingOff = connection error + retry pending → amber, not green.
+    val statusColor = when (agentStatus) {
+        is AgentStatus.Idle, AgentStatus.Polling, AgentStatus.Starting -> IndustrialGreen
+        is AgentStatus.BackingOff -> IndustrialAmber
         else -> IndustrialRed
     }
+    val statusDot = if (serviceRunning) "●" else "○"
     val statusText = when (agentStatus) {
         AgentStatus.Stopped  -> "מופסק"
         AgentStatus.Starting -> "מתחיל…"
@@ -371,7 +376,9 @@ private fun StatusCard(
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
+            // Top-align so the button stays pinned to the top of the card when
+            // a long BackingOff reason wraps across multiple lines.
+            verticalAlignment = Alignment.Top,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(modifier = Modifier.weight(1f)) {
@@ -390,7 +397,13 @@ private fun StatusCard(
                         color = IndustrialText,
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // fillMaxWidth + weight(1f) on the status text ensures the text
+                // wraps within the available column width rather than squeezing
+                // the printer-count text to a zero-width slot (one char per line).
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
                         text = statusDot,
                         fontFamily = FontFamily.Monospace,
@@ -400,19 +413,19 @@ private fun StatusCard(
                     Spacer(Modifier.width(4.dp))
                     Text(
                         text = statusText,
+                        modifier = Modifier.weight(1f),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
                         color = statusColor,
                     )
-                    if (printerCount > 0) {
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "· $printerCount מדפסות",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = IndustrialTextDim,
-                        )
-                    }
+                }
+                if (printerCount > 0) {
+                    Text(
+                        text = "· $printerCount מדפסות",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = IndustrialTextDim,
+                    )
                 }
                 if (sessionPrinted > 0 || sessionFailed > 0) {
                     Text(
@@ -424,7 +437,7 @@ private fun StatusCard(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            if (!isActive) {
+            if (!serviceRunning) {
                 Button(
                     onClick = onStart,
                     shape = RectangleShape,

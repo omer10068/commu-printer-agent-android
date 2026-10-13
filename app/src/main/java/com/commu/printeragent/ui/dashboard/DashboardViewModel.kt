@@ -327,7 +327,7 @@ class DashboardViewModel(app: Application) : AndroidViewModel(app) {
                 mappingRepo.saveAll(newMappings)
                 _uiState.update { it.copy(isSyncing = false, syncMessage = "✓ סנכרון הצליח — ${newMappings.size} מדפסות") }
             } else {
-                _uiState.update { it.copy(isSyncing = false, syncMessage = "✓ הרשמה הצליחה") }
+                _uiState.update { it.copy(isSyncing = false, syncMessage = "הרשמה הצליחה — לא ניתן לאחזר מדפסות") }
             }
         } catch (e: Exception) {
             _uiState.update { it.copy(isSyncing = false, syncMessage = "שגיאה: ${e.message}") }
