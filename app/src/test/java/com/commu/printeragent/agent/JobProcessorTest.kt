@@ -361,6 +361,30 @@ class JobProcessorTest {
         assertTrue(failedPatch.errorMessage?.contains("ECONNREFUSED") == true)
     }
 
+    // ── patchReported flag ────────────────────────────────────────────────────
+
+    @Test
+    fun `patchReported is false when printed PATCH fails after TCP success`() = runTest {
+        val processor = JobProcessor(
+            fetchQueue = { _, _, _, _ -> Result.success(listOf(job(1, 1))) },
+            patchStatus = { _, _, _, _, status, _ ->
+                if (status == "claimed") Result.success(Unit)
+                else Result.failure(Exception("backend unavailable"))
+            },
+            send = { _, _, bytes -> PrintResult.Transmitted(bytes.size) },
+            render = { byteArrayOf(1) },
+        )
+        val results = processor.processQueue(
+            "http://localhost", "t", "tok",
+            mappings = mapOf(1 to "uuid-a"),
+            printers = listOf(printer("uuid-a", "10.0.0.1")),
+        )
+        assertEquals(1, results.size)
+        assertTrue(results[0].isSuccess)          // TCP succeeded
+        assertFalse(results[0].patchReported)      // PATCH failed
+        assertTrue(results[0].message.contains("⚠")) // warning suffix present
+    }
+
     // ── onProgress callback ───────────────────────────────────────────────────
 
     @Test

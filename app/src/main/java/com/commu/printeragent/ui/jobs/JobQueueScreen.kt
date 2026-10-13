@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.commu.printeragent.agent.AgentStatus
 import com.commu.printeragent.agent.JobResult
 import com.commu.printeragent.printing.formatCheckTime
 import com.commu.printeragent.ui.theme.IndustrialAmber
@@ -80,8 +80,96 @@ fun JobQueueScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // ── Section [3]: Queue ─────────────────────────────────────────────
-            JobSectionHeader(number = "3", title = "תור הדפסה")
+            // ── Section [3]: Automatic Agent ──────────────────────────────────
+            JobSectionHeader(number = "3", title = "סוכן הדפסה אוטומטי")
+            Spacer(Modifier.height(8.dp))
+
+            // Start / Stop button
+            val agentRunning = state.agentStatus !is AgentStatus.Stopped
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (agentRunning) {
+                    Button(
+                        onClick = { vm.stopAgent() },
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialRed,
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text("■ עצור סוכן", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    }
+                } else {
+                    Button(
+                        onClick = { vm.startAgent() },
+                        shape = RectangleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = IndustrialGreen,
+                            contentColor = IndustrialDark,
+                        ),
+                    ) {
+                        Text("▶ הפעל סוכן", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // Agent status indicator
+            val agentStatusColor = when (state.agentStatus) {
+                is AgentStatus.Polling  -> IndustrialGreen
+                is AgentStatus.Idle     -> IndustrialBlue
+                is AgentStatus.Starting -> IndustrialAmber
+                is AgentStatus.BackingOff, is AgentStatus.NoConfig -> IndustrialAmber
+                is AgentStatus.Stopped  -> IndustrialTextDim
+            }
+            val agentStatusText = when (state.agentStatus) {
+                is AgentStatus.Polling   -> "בודק תור הדפסה…"
+                is AgentStatus.Idle      -> "ממתין לעבודות חדשות"
+                is AgentStatus.Starting  -> "מתחיל…"
+                is AgentStatus.BackingOff -> "שגיאת חיבור — ניסיון חוזר בקרוב"
+                is AgentStatus.NoConfig  -> "הגדרות חסרות — בדוק חיבור ומדפסות"
+                is AgentStatus.Stopped   -> "עצור"
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(IndustrialSurface)
+                    .border(1.dp, agentStatusColor.copy(alpha = 0.4f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MonoText("● $agentStatusText", agentStatusColor)
+            }
+
+            if (state.agentLastPollMs > 0L || state.agentSessionPrinted > 0 || state.agentSessionFailed > 0) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    if (state.agentLastPollMs > 0L) {
+                        MonoText("בדיקה: ${formatCheckTime(state.agentLastPollMs)}", IndustrialTextDim)
+                    } else {
+                        Spacer(Modifier.width(1.dp))
+                    }
+                    if (state.agentSessionPrinted > 0 || state.agentSessionFailed > 0) {
+                        MonoText(
+                            "הדפסות: ${state.agentSessionPrinted}  שגיאות: ${state.agentSessionFailed}",
+                            IndustrialTextDim,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ── Section [4]: Manual Queue ──────────────────────────────────────
+            JobSectionHeader(number = "4", title = "תור הדפסה ידני")
             Spacer(Modifier.height(8.dp))
 
             // Action row: button + last-run time
@@ -157,7 +245,6 @@ fun JobQueueScreen(
                 HorizontalDivider(color = IndustrialBorder)
                 Spacer(Modifier.height(8.dp))
 
-                // Summary line
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -177,7 +264,6 @@ fun JobQueueScreen(
 
                 Spacer(Modifier.height(6.dp))
 
-                // Per-job result rows
                 state.jobResults.forEach { result ->
                     JobResultRow(result = result)
                     Spacer(Modifier.height(4.dp))
@@ -229,7 +315,7 @@ private fun JobResultRow(result: JobResult) {
     }
 }
 
-// ── Shared helpers (local copies — avoids pulling in cross-screen dependencies) ──
+// ── Shared composable helpers ─────────────────────────────────────────────────
 
 @Composable
 private fun JobSectionHeader(number: String, title: String) {
