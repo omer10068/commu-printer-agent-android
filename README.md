@@ -1,204 +1,158 @@
 # Commu Printer Agent — Android
 
-An Android printer-spooler agent for the Communicate AI take-home assignment.
+An Android take-home assignment for Communicate AI.  
+Replaces the functional role of the supplied Windows printer-spooler EXE with a native Android app.
 
-> **Project status:** Initial Android project scaffold. Features described below are **requirements and implementation plans**, not claims of completed functionality. Update the checklist and test evidence as work is completed.
+## What it does
 
-## Overview
+- Authenticates with the Communicate AI demo backend using a Tenant ID and Bearer token.
+- Discovers ESC/POS thermal printers on the local Wi-Fi subnet (TCP port 9100).
+- Names printers and synchronises them with the backend via `agent-sync`.
+- Guides the user through static-IP configuration via each printer's own web admin page.
+- Verifies physical connectivity with a test print on each saved printer.
+- Runs a background polling loop (foreground service) that claims queued jobs, renders Hebrew receipts as 1-bit raster bitmaps, routes them to the correct printer over TCP, and reports `printed` / `failed` to the backend.
+- Survives screen lock, task-kill, and device reboot.
+- Supports at least two configured printers with per-printer job serialisation.
 
-The app connects a local Android device to an existing POS/demo print queue. It discovers and configures network receipt printers, maps them to backend printers, receives print jobs, sends them over the local network, and reports job outcomes.
+The application intentionally uses a retro, industrial-style interface — monospace fonts, dark panels, and technical status indicators — in accordance with the assignment's explicit UI requirements.
 
-```text
-Communicate AI demo backend (HTTP API, port 5100)
-                |
-      Authenticated agent API
-                |
-       Android Printer Agent
-         |             |
-    UI / setup     Background worker
-                       |
-                Per-printer routing
-                    /      \
-          TCP :9100      TCP :9100
-          Printer A      Printer B
-```
+## Technology stack
 
-**Scope:** Build the **Android agent**, not a replacement backend, demo web console, or Windows EXE. The supplied Windows agent is a behavioral reference, not code to bundle or port verbatim. The demo backend remains external to this repository.
-
-## Assignment requirements
-
-- [ ] Connect using **Backend URL**, **Tenant ID**, and **Agent Token**.
-- [ ] Discover reachable LAN printers; display scan status and errors.
-- [ ] Name, save, and synchronize printers with the demo backend.
-- [ ] Configure and **verify an actual static IP on supported printer hardware**; do not confuse this with storing an IP locally.
-- [ ] Route print jobs to **at least two** configured printers, without interleaving jobs on an individual printer.
-- [ ] Render and print receipt content, including Hebrew / right-to-left text.
-- [ ] Report job lifecycle (`claimed`, `printed`, `failed`) to the demo queue.
-- [ ] Remain useful and responsive while running in the background; recover from connectivity interruptions.
-- [ ] Restore configured operation after device reboot, within Android's background-execution restrictions.
-- [ ] Use an intentionally **old-school, technical/industrial** Android UI with informative status indicators.
-- [ ] Deliver a runnable APK, source code, setup instructions, test evidence, and known limitations.
-
-## Planned stack
-
-| Area | Technology |
+| Layer | Library / API |
 |---|---|
-| Android | Kotlin, Jetpack Compose, Material 3 components styled for a retro technical UI |
-| Architecture | UI / domain / data separation; ViewModels and StateFlow |
-| Concurrency | Kotlin coroutines and structured cancellation |
-| HTTP & SSE | OkHttp (SSE optional; polling must work independently) |
-| Printing | Java/Kotlin TCP sockets on port 9100; ESC/POS raster printing |
-| Settings | DataStore for non-sensitive settings; Android Keystore-backed solution for token encryption |
-| Agent lifecycle | Foreground service where allowed, boot receiver / supported restart path, reconnection policy |
-| Tests | JVM unit tests, HTTP mock tests, device integration tests |
+| Language | Kotlin 2.2.10 |
+| UI | Jetpack Compose + Material 3 (Compose BOM 2026.02.01) |
+| Build | AGP 9.4.1, Gradle 9.6.0 (wrapper) |
+| HTTP | OkHttp 4.12.0 |
+| Storage | DataStore Preferences 1.1.1 (settings); Security Crypto 1.0.0 (token) |
+| Background | `foregroundServiceType="connectedDevice"` foreground service + `BOOT_COMPLETED` receiver |
+| Printing | Java TCP sockets, ESC/POS, Android Canvas bitmap rasterisation |
+| Tests | JUnit 4, OkHttp MockWebServer, kotlinx-coroutines-test 1.7.3 |
 
-Final dependency and Android service-type choices should be validated against the project's SDK levels and the device OS version before implementation.
+## Prerequisites
 
-## Demo backend — verified contract
+| Requirement | Version |
+|---|---|
+| JDK | **17 or higher** — required by Gradle 9.6 and AGP 9.4.1 (JBR 17 bundled with Android Studio satisfies this) |
+| Android SDK | API levels 26–37 installed (`sdkmanager "platforms;android-37"`) |
+| `ANDROID_HOME` | Must point to the SDK root, or `local.properties` must set `sdk.dir` |
+| Android device | API 26+ (Android 8.0+) with USB debugging enabled, for APK installation |
 
-The separately supplied `printer-spooler-kit` exposes a development server on port `5100`:
+Android Studio is **not required** to build — the Gradle wrapper downloads Gradle 9.6 automatically.  
+Ensure `JAVA_HOME` points to a JDK 17+ installation before running the wrapper on the command line.
 
-```powershell
-# Run from the separate printer-spooler-kit directory
-npm install
-npm start
-# Open http://localhost:5100 on the development PC
-npm run smoke  # in a separate terminal, with the server running
-```
-
-Configure the Android app with a **LAN-reachable** URL, such as `http://<PC_LAN_IP>:5100`; `localhost` on the phone refers to the phone itself. The PC firewall must allow the phone to access the port.
-
-Create an agent token in the demo console under **סוכני מדפסת** (printer agents). The token starts with `pa_` and is displayed only once. The app sends it as:
-
-```http
-Authorization: Bearer pa_<token>
-```
-
-The Tenant ID must match the one used when generating the token. For the local demo, authentication for manager-only console operations is separate from agent authentication.
-
-### Agent API
-
-All tenant-scoped endpoints are relative to the configured base URL:
-
-| Method | Route | Purpose |
-|---|---|---|
-| `GET` | `/health` | Confirm demo server is reachable |
-| `POST` | `/printers/tenant/{tenantId}/agent-sync` | Synchronize printer names and flags |
-| `GET` | `/printers/tenant/{tenantId}/active` | Retrieve active backend printers |
-| `GET` | `/printers/tenant/{tenantId}/print-jobs/agent-queue?printerIds=1,2&limit=25` | Poll queued jobs, oldest first |
-| `PATCH` | `/printers/tenant/{tenantId}/print-jobs/{jobId}/status` | Update job state |
-| `GET` | `/printers/tenant/{tenantId}/print-jobs/agent-stream` | Optional SSE wake-up events |
-
-Example sync body:
-
-```json
-{
-  "activePrinterNames": ["Kitchen", "Bar"],
-  "cashDrawerPrinterNames": [],
-  "mainPrinterName": "Kitchen"
-}
-```
-
-Example print job (representative):
-
-```json
-{
-  "id": 7,
-  "tenantId": "demo",
-  "printerId": 1,
-  "printerName": "Kitchen",
-  "status": "queued",
-  "printableText": "Order #123\n..."
-}
-```
-
-For each job: discover queued work, request `claimed`, route using the saved **backend-printer ID → local printer endpoint** mapping, send the bytes, then report `printed` or `failed`. Capture errors and timings without logging credentials.
-
-**Reliability caveat:** The provided demo backend's status update is not a compare-and-swap / atomic claim. It does not guarantee exactly-once delivery across multiple agents or automatically recover an abandoned `claimed` job. Avoid duplicates within this agent; document remaining server-side limits. A successful socket write does **not** prove the paper physically printed. Record the strongest status evidence that the printer actually exposes.
-
-## Planned Android modules / responsibilities
-
-The project may begin as a **single Gradle `app` module** with clear packages:
-
-```text
-app/src/main/java/com/commu/printeragent/
-├── ui/             # Compose screens and ViewModels
-├── data/           # API client, settings, printer mapping
-├── domain/         # Job and printer models, orchestration
-├── printing/       # LAN discovery, TCP, ESC/POS, receipt rasterization
-└── agent/          # Queue polling, routing, lifecycle and background work
-```
-
-This is a **target package structure**, not a claim those packages exist today. Keep the print engine and queue processing independent of Activity lifecycle and Compose.
-
-## UI workflow
-
-1. **Connection:** Server URL, Tenant ID, Agent Token, connection test.
-2. **Printers:** Scan subnet with bounded timeouts/concurrency; allow manual IP entry, naming, local save and backend sync.
-3. **Static IP:** Show current and proposed settings, provide a supported vendor-specific configuration path, then verify the new address by reconnecting. Unsupported devices must show a clear explanation, not a fake success.
-4. **Operational status:** Connected/disconnected, last successful poll, printer availability, last print result, actionable errors and retry state.
-
-The UI should intentionally resemble a practical legacy control panel rather than a consumer-style design.
-
-## Networking and hardware notes
-
-- Receipt printers are expected to expose a reachable TCP print service (commonly RAW port `9100`). Discovery should not treat an open port as definitive proof of printer identity.
-- Physical test device: **Samsung Galaxy S22+**.
-- Available printer used in the preliminary PC test: **SNBC BTP-R880NPII**, previously reached at `192.168.1.21:9100`. This IP is an **example from the test setup**, not an application default.
-- PC-side printing via TCP and the supplied Windows EXE was observed to work. **Android-to-printer printing has not yet been validated.**
-- The PC's Wi-Fi LAN and the printer's Ethernet LAN have been on **different subnets**. Resolve routing / Wi-Fi access before claiming Android direct discovery or printing works.
-- Static-IP configuration is **printer/model specific**. Back up original network settings and provide a recovery procedure before attempting a change.
-- Test at least two configured printers; a simulated second TCP endpoint is useful, but document that it does not replace a two-physical-printer test.
-
-## Local Android development
-
-Prerequisites: Android Studio, Android SDK/Gradle configured, and an Android device with USB debugging enabled.
+## Clone and build
 
 ```powershell
-# Run from the repository root (Windows)
-.\gradlew.bat assembleDebug
+git clone https://github.com/omer10068/commu-printer-agent-android.git
+cd commu-printer-agent-android
+.\gradlew.bat assembleDebug          # build APK
+.\gradlew.bat testDebugUnitTest      # run 216 JVM unit tests (no device needed)
+```
+
+Build output: `app/build/outputs/apk/debug/app-debug.apk` (~14 MB)
+
+### Optional: Android Studio
+
+Open the project root in Android Studio. A version compatible with AGP 9.4.1 is required — use a current release.  
+The IDE will sync Gradle automatically.
+
+## Install APK
+
+```powershell
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+Or copy the APK to the device and open it (enable **Install unknown apps** for Files/Chrome).
+
+## Start the demo backend
+
+The demo backend is a **separate supplied project** (`printer-spooler-kit`) — not included in this repository.
+
+```bash
+cd printer-spooler-kit
+npm install           # Node.js 18+ required
+npm start             # listens on port 5100
+```
+
+The startup log prints a **LAN address** (e.g., `http://192.168.1.53:5100`).  
+Use that address in the app — `localhost` resolves to the phone itself, not the PC.
+
+Verify the server is healthy:
+
+```bash
+npm run smoke         # runs a complete agent-protocol walkthrough
+```
+
+## Obtain a Tenant ID and agent token
+
+1. Open the console at `http://localhost:5100`.
+2. The Tenant ID defaults to `demo` (shown in the URL after logging in).
+3. Under **סוכני מדפסת**, enter a name for this agent and press **צור טוקן**.
+4. Copy the `pa_…` value — it is shown **once only**. Losing it requires revoking and re-issuing.
+
+## Onboarding — four-step wizard
+
+Every step must succeed before proceeding. The wizard reopens at the first incomplete step.
+
+| Step | What to do |
+|---|---|
+| **1 · Connect** | Enter the backend LAN URL (`http://<PC-IP>:5100`), Tenant ID, and agent token. Tap **Connect**. |
+| **2 · Discover** | Tap **Search for printers**. The app scans the /24 subnet on port 9100. Tap ⊕ next to each printer, give it a name, and save. At least one printer is required. |
+| **3 · Static IP** | Tap a printer row — the app opens the printer's web admin interface in the browser. Set a static IP there, return to the app, and confirm **Yes** in the dialog. Repeat for each printer. |
+| **4 · Test print** | Tap each printer row to send an ASCII test page. Confirm **Yes** in the dialog once the page prints. |
+
+After all four steps succeed the app opens the **Dashboard** and the background agent starts automatically.
+
+## Printing a test receipt and sending jobs from the backend
+
+1. Ensure the agent is running (green status card on the Dashboard).
+2. In the demo console under **עבודות הדפסה**, use:
+   - **הדפסת בדיקה** — sends a short alignment test to the first active printer.
+   - **קבלה לדוגמה** — queues a multi-line Hebrew order receipt with items, VAT, and totals.
+3. The agent claims the job within its polling interval, sends it over TCP, and reports the result.  
+   The job status updates in real time in the demo console.
+
+## Running automated tests
+
+```powershell
 .\gradlew.bat testDebugUnitTest
 ```
 
-Build output, after a successful build: `app/build/outputs/apk/debug/app-debug.apk`.
+216 JVM unit tests, no device required, no network required.  
+Test HTML report: `app/build/reports/tests/testDebugUnitTest/index.html`
 
-For a local HTTP demo server, configure **debug-only** cleartext access as narrowly as feasible using Android network security config (or document a necessary development manifest setting). Prefer HTTPS for deployment. Do not hardcode a bearer token or local IP into committed source.
+**Coverage areas:**
+- Backend HTTP client (MockWebServer) — connection, auth failure, job parsing, PATCH status
+- Job processor — routing, PATCH sequencing, per-printer serialisation, failure isolation
+- LAN scanner — subnet calculation, IP validation
+- ESC/POS encoder — command byte sequences, raster wrapping
+- Receipt layout calibration — font calibration math, horizontal inset geometry
+- Printer mapping — encode/decode routing table
+- Printer and onboarding repository logic — CRUD, state transitions, migration
 
-## Verification plan
+## Testing evidence and known limitations
 
-- [ ] Builds from a clean checkout (`assembleDebug`).
-- [ ] Installs and launches on Samsung Galaxy S22+.
-- [ ] Can authenticate and sync printers to the demo tenant.
-- [ ] Finds/reaches the physical printer from the **phone**.
-- [ ] Prints readable Hebrew and numbers from demo receipt payloads.
-- [ ] Routes separate jobs to two configured printers.
-- [ ] Updates queued → claimed → printed/failed appropriately.
-- [ ] Recovers after backend/printer disconnection without crashing or uncontrolled retries.
-- [ ] Continues expected work with Activity closed and screen locked, within OS policy.
-- [ ] Recovers operation after reboot (test actual device behavior and user consent requirements).
-- [ ] Verifies static-IP changes on supported printer hardware.
-- [ ] Documents limitations and shows a short reproducible end-to-end demo.
+**Tested on:** Samsung Galaxy S22+ (Android 14), SNBC BTP-R880NPII thermal printer (80 mm, 203 DPI).
 
-## Security and sharing
+| Feature | Evidence |
+|---|---|
+| End-to-end print loop | Jobs printed physically on SNBC printer; job status reaches `printed` in demo console |
+| Hebrew / RTL rendering | Restaurant receipts with Hebrew product names, prices, and totals printed correctly |
+| Two-printer routing | One physical printer (SNBC) + one PC TCP mock (`tools/pc-mock-printer.ps1`); two physical printers not available |
+| Background operation | Agent survives screen lock and swipe-to-close; tested on Galaxy S22+ |
+| Boot recovery | Agent restarts automatically after reboot without opening the app; verified on Galaxy S22+ |
 
-- Never commit actual Agent Tokens, passwords, `.env` files, keystores, debug dumps, or customer data.
-- Do not include vendor-provided Windows EXE / backend source archives in this repository without explicit authorization.
-- Keep this repository private unless the evaluator explicitly requests different sharing permissions.
-- Minimize logs containing receipt text; never log `Authorization` headers.
+**Known limitations:**
 
-## Known limitations / to resolve
+- **Static IP:** The app opens each printer's web admin page and asks the user to confirm. There is no independent TCP re-verification after confirmation; the app trusts the user's answer. SNBC and similar printers do not expose a standard ESC/POS command to change network settings.
+- **Two-printer physical test:** Only one physical ESC/POS printer was available. Per-printer routing and serialisation are validated by JVM TCP integration tests against two real `ServerSocket(0)` endpoints and by the PC mock receiver.
+- **Cleartext HTTP:** This debug build permits cleartext HTTP to support the local demo backend. The network security config must be tightened before production deployment.
+- **Boot recovery — first device unlock:** The `BOOT_COMPLETED` receiver starts the foreground service automatically on every reboot — no manual app launch required. However, the Android Keystore does not expose credential-encrypted storage until the device is unlocked for the first time after a cold boot. If the device has not yet been unlocked, the service starts in a `NoConfig` state and waits. The moment the user unlocks the screen (no need to open the app), the token becomes readable and the agent resumes on the next poll cycle. This has been verified on Samsung Galaxy S22+ (Android 14).
+- **Print confirmation:** A successful TCP `socket.write()` confirms bytes were transmitted to the printer's input buffer. It does not confirm that the paper physically ejected. `printed` status reflects TCP transmission success, not paper output.
 
-- Current project is the Android template; the app behavior above is **not implemented yet**.
-- Need to determine hardware-specific SNBC static-IP configuration mechanism.
-- Need LAN connectivity from phone to both the PC-hosted demo API and the printer(s).
-- Printer acknowledgment semantics vary by device; paper output is not provable by TCP write alone.
-- Android background-start and boot restrictions vary by OS/device; validate on the actual Galaxy S22+.
-- Two-printer physical validation depends on hardware availability.
+## Security notes
 
-## References
-
-- Supplied assignment instructions and mobile UI flow.
-- `printer-spooler-kit/README.md`, `server/index.js`, `server/store.js`, `scripts/smoke.js` in the **separately supplied** demo archive.
-- Supplied Windows Agent executable / source as a behavioral reference.
-
-Update this README as features are implemented, tested, and demonstrated.
+- The agent token is stored in `EncryptedSharedPreferences` backed by the Android Keystore (AES-256-SIV key encryption, AES-256-GCM value encryption).
+- Tokens, `Authorization` headers, and receipt text are never written to Logcat.
+- The demo backend uses HTTP only. This repository is private; do not expose the backend to the public internet.
