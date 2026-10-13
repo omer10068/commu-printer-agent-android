@@ -3,10 +3,11 @@ package com.commu.printeragent.printing
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
+import android.text.TextDirectionHeuristics
 import android.text.TextPaint
-import android.graphics.Typeface
 import java.io.ByteArrayOutputStream
 
 /**
@@ -20,6 +21,7 @@ import java.io.ByteArrayOutputStream
  * (wrap with [EscPosEncoder.buildRasterReceipt] or add INIT/CUT manually).
  *
  * This class is Android-only (requires Canvas + Bitmap) and cannot be JVM unit-tested.
+ * Pure layout math lives in ReceiptLayoutCalc.kt and is fully JVM-testable.
  */
 object ReceiptRenderer {
 
@@ -27,30 +29,74 @@ object ReceiptRenderer {
 
     /**
      * Renders [text] to ESC/POS raster bytes.
-     * [textSizePx] controls the font size in canvas pixels; 28px ≈ readable at 203 DPI.
+     * [textSizePx] is the starting font size; calibration may adjust it.
      */
     fun renderText(text: String, textSizePx: Float = 28f): ByteArray {
+        val bitmap = renderBitmap(text, textSizePx)
+        return bitmapToGsV0(bitmap).also { bitmap.recycle() }
+    }
+
+    /**
+     * Development-only. Renders [text] and saves the intermediate bitmap as a PNG.
+     *
+     * Usage on device:
+     *   ReceiptRenderer.saveDebugPreview(text, context.getExternalFilesDir(null)
+     *       ?.resolve("receipt_preview.png") ?: return)
+     *   // then: adb pull /sdcard/Android/data/<pkg>/files/receipt_preview.png
+     *
+     * Not called from the production job-processing pipeline.
+     */
+    fun saveDebugPreview(text: String, outputFile: java.io.File, textSizePx: Float = 28f) {
+        val bitmap = renderBitmap(text, textSizePx)
+        try {
+            outputFile.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    // ── Internal rendering ──────────────────────────────────────────────────────
+
+    private fun renderBitmap(text: String, textSizePx: Float): Bitmap {
+        // Content is drawn inside [HORIZONTAL_INSET, DOTS_WIDTH - HORIZONTAL_INSET].
+        // This leaves a safe blank margin on each side to absorb the printer's internal
+        // raster offset (~14 dots observed on SNBC BTP-R880NPII) and Hebrew glyph overflow.
+        val contentWidth = DOTS_WIDTH - 2 * HORIZONTAL_INSET
+
         val textPaint = TextPaint().apply {
             color = Color.BLACK
             textSize = textSizePx
-            typeface = Typeface.DEFAULT
+            typeface = Typeface.MONOSPACE
             isAntiAlias = false
         }
 
+        // Scale so that exactly 42 monospace chars fill contentWidth dots.
+        textPaint.textSize = calibrateFontSize(
+            initialSize       = textPaint.textSize,
+            measuredCharWidth = textPaint.measureText("0"),
+            dotsWidth         = contentWidth,
+        )
+
+        // LTR paragraph direction: Hebrew RTL runs are shaped correctly within LTR context.
+        // Separator lines (neutral chars) stay left-to-right, not subject to RTL reordering.
         val layout = StaticLayout.Builder
-            .obtain(text, 0, text.length, textPaint, DOTS_WIDTH)
+            .obtain(text, 0, text.length, textPaint, contentWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setLineSpacing(0f, 1.2f)
             .setIncludePad(false)
+            .setTextDirection(TextDirectionHeuristics.LTR)
             .build()
 
-        val bitmapHeight = (layout.height + textSizePx.toInt()).coerceAtLeast(1)
+        val bitmapHeight = (layout.height + textPaint.textSize.toInt()).coerceAtLeast(1)
         val bitmap = Bitmap.createBitmap(DOTS_WIDTH, bitmapHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.WHITE)
+        canvas.save()
+        canvas.translate(HORIZONTAL_INSET.toFloat(), 0f)
         layout.draw(canvas)
+        canvas.restore()
 
-        return bitmapToGsV0(bitmap).also { bitmap.recycle() }
+        return bitmap
     }
 
     private fun bitmapToGsV0(bitmap: Bitmap): ByteArray {
