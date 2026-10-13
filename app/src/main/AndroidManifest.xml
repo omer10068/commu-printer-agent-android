@@ -6,6 +6,22 @@
     <!-- Normal permissions — no runtime grant required -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Required for any foreground service (all API levels) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+        Required on API 34+ for foregroundServiceType="connectedDevice".
+        This is a normal permission (no runtime grant dialog).
+        Chosen over dataSync because the agent maintains a continuous TCP connection
+        to LAN-attached ESC/POS printers, which matches "connected device" semantics.
+        dataSync carries a 6-hour runtime cap on Android 15 that would break polling.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Associated permission required by the connectedDevice foreground-service type -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Required to display the ongoing notification on API 33+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required by BootReceiver to restart the agent after device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -17,6 +33,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.CommuPrinterAgent">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -25,10 +42,34 @@
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            foregroundServiceType="connectedDevice" is required on API 29+ for services
+            that communicate with external connected devices (LAN printer over TCP).
+            android:exported="false" — the service is internal only; started via explicit Intent.
+        -->
+        <service
+            android:name=".agent.PrintAgentService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
+
+        <!--
+            Listens for BOOT_COMPLETED to restart the agent if it was enabled before reboot.
+            android:exported="false" prevents third-party triggers; system broadcast still
+            arrives. Note: encrypted token is unavailable until first device unlock — the
+            service handles this gracefully via the NoConfig state.
+        -->
+        <receiver
+            android:name=".agent.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

@@ -9,6 +9,15 @@ data class JobResult(
     val printerName: String,
     val isSuccess: Boolean,
     val message: String,
+    /**
+     * True when the backend PATCH confirming the outcome was acknowledged.
+     * False when TCP transmission succeeded but the subsequent PATCH to "printed"
+     * failed (e.g. transient network loss between send and report).
+     *
+     * When false, the caller should persist a [PendingPatch] so the PATCH can be
+     * retried on the next cycle — without re-sending to the printer.
+     */
+    val patchReported: Boolean = true,
 )
 
 /**
@@ -116,13 +125,15 @@ class JobProcessor(
             // Send to the physical printer
             when (val sendResult = send(printer.address, printer.port, bytes)) {
                 is PrintResult.Transmitted -> {
-                    // Best-effort: report printed even if the PATCH itself fails
-                    patchStatus(baseUrl, tenantId, token, job.id, "printed", null)
+                    val patchResult = patchStatus(baseUrl, tenantId, token, job.id, "printed", null)
+                    val reported = patchResult.isSuccess
+                    val suffix = if (reported) "" else " ⚠ דיווח ממתין"
                     results.add(JobResult(
                         jobId = job.id,
                         printerName = job.printerName,
                         isSuccess = true,
-                        message = "✓ ${sendResult.byteCount} bytes → ${printer.address}:${printer.port}",
+                        patchReported = reported,
+                        message = "✓ ${sendResult.byteCount} bytes → ${printer.address}:${printer.port}$suffix",
                     ))
                 }
                 is PrintResult.Failed -> {
