@@ -40,3 +40,6 @@ CLAUDE.md
 # Screenshots and local test artifacts
 *.png
 *.jpg
+
+# Assignment specification documents (stay local, not committed)
+/docs/
